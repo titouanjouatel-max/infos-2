@@ -68,7 +68,7 @@ FF_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.xml"
 
 # Symboles Yahoo Finance (gratuit, sans clé API). Cotations différées, à but indicatif.
 PRICE_SYMBOLS = {
-    "XAUUSD": "XAUUSD=X",
+    "XAUUSD": "GC=F",
     "NAS100": "^NDX",
     "SP500": "^GSPC",
     "BTCUSD": "BTC-USD",

@@ -113,7 +113,7 @@ python3 tracker.py
 | Donnée              | Source                          | Clé API requise |
 |---------------------|----------------------------------|------------------|
 | Actualités          | Google News, Yahoo Finance       | Non              |
-| Prix XAUUSD/NAS100/SP500/BTCUSD | Yahoo Finance (différé) | Non           |
+| Prix XAUUSD (via futures or COMEX `GC=F`, proxy très proche du spot) / NAS100 / SP500 / BTCUSD | Yahoo Finance (différé) | Non |
 | Prix BTCUSD (repli) | CoinGecko                        | Non              |
 | Calendrier économique | ForexFactory                   | Non              |
 | Analyse macro        | API Anthropic (Claude)          | Oui (optionnelle, repli par mots-clés sinon) |
