@@ -38,10 +38,15 @@ vérifiez toujours le prix exact chez votre broker avant toute décision.
 1. **`tracker.py`** :
    - Récupère les dernières actualités via plusieurs flux RSS (Google News —
      Fed/inflation, marchés, crypto, géopolitique —, Yahoo Finance).
-   - Récupère un prix indicatif pour chaque actif via Stooq (gratuit, sans clé
-     API), avec un repli sur CoinGecko pour le Bitcoin en cas d'échec.
+   - Récupère un prix indicatif pour chaque actif via l'API Yahoo Finance
+     (gratuite, sans clé), avec un repli sur CoinGecko pour le Bitcoin en cas
+     d'échec.
    - Récupère le calendrier économique de la semaine via ForexFactory et ne
-     garde que les événements à impact moyen/fort.
+     garde que les événements à impact moyen/fort. Pour chaque événement
+     reconnu (CPI, FOMC, emploi, PIB, PMI...), affiche les actifs concernés et
+     un exemple concret d'impact selon que le chiffre publié soit au-dessus ou
+     en dessous des attentes (classification locale par mots-clés, sans appel
+     API supplémentaire).
    - Envoie les titres collectés à l'API Anthropic (modèle Claude) avec un jeu
      de règles macro strictes :
      - Inflation en hausse / Fed *hawkish* → 🔴 BAISSE pour les 4 actifs.
@@ -108,7 +113,7 @@ python3 tracker.py
 | Donnée              | Source                          | Clé API requise |
 |---------------------|----------------------------------|------------------|
 | Actualités          | Google News, Yahoo Finance       | Non              |
-| Prix XAUUSD/NAS100/SP500/BTCUSD | Stooq (différé)      | Non              |
+| Prix XAUUSD/NAS100/SP500/BTCUSD | Yahoo Finance (différé) | Non           |
 | Prix BTCUSD (repli) | CoinGecko                        | Non              |
 | Calendrier économique | ForexFactory                   | Non              |
 | Analyse macro        | API Anthropic (Claude)          | Oui (optionnelle, repli par mots-clés sinon) |

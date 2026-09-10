@@ -23,9 +23,7 @@ calendrier des échéances à risque, ce qui reste utile pour éviter de trader
 
 from __future__ import annotations
 
-import csv
 import html
-import io
 import json
 import os
 import re
@@ -68,12 +66,12 @@ FEEDS = [
 
 FF_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.xml"
 
-# Symboles Stooq (gratuit, sans clé API). Cotations différées, à but indicatif.
+# Symboles Yahoo Finance (gratuit, sans clé API). Cotations différées, à but indicatif.
 PRICE_SYMBOLS = {
-    "XAUUSD": "xauusd",
-    "NAS100": "^ndx",
-    "SP500": "^spx",
-    "BTCUSD": "btcusd",
+    "XAUUSD": "XAUUSD=X",
+    "NAS100": "^NDX",
+    "SP500": "^GSPC",
+    "BTCUSD": "BTC-USD",
 }
 
 # Repli spécifique Bitcoin (source très fiable, gratuite, sans clé).
@@ -95,6 +93,39 @@ IMPACT_STYLE = {
 
 DEFAULT_REASON = "Pas assez de signal clair dans les actualités récentes pour trancher."
 DEFAULT_SUMMARY = "Pas assez d'actualités récentes pour dégager une synthèse claire du climat de marché."
+
+# Classification des événements du calendrier par mots-clés : actifs concernés
+# + exemple concret d'impact selon que le chiffre publié soit au-dessus ou en
+# dessous des attentes. Appliqué localement (pas d'appel API) pour rester
+# rapide et gratuit à chaque exécution toutes les 5 minutes.
+CALENDAR_IMPACT_RULES = [
+    (r"cpi|inflation rate|pce price index|core pce|ppi\b", ASSETS,
+     "Chiffre au-dessus des attentes → craintes d'inflation ravivées, Fed perçue plus restrictive → pression baissière probable sur les 4 actifs.",
+     "Chiffre en dessous des attentes → anticipations de baisse de taux renforcées → pression haussière probable sur les 4 actifs."),
+    (r"fomc|interest rate decision|fed funds rate|federal funds rate|rate statement|fed chair|powell|monetary policy statement",
+     ASSETS,
+     "Ton plus restrictif (\"hawkish\") que prévu → pression baissière probable sur les 4 actifs.",
+     "Ton plus accommodant (\"dovish\") que prévu → pression haussière probable sur les 4 actifs."),
+    (r"non-?farm|nonfarm payrolls|employment change|unemployment rate|jobless claims|average hourly earnings",
+     ASSETS,
+     "Emploi plus solide que prévu → peut raviver les craintes que la Fed reste restrictive plus longtemps (logique \"bonne nouvelle économique = mauvaise nouvelle pour les taux\") → pression baissière possible sur les 4 actifs.",
+     "Emploi plus faible que prévu → paris renforcés sur une Fed plus accommodante → pression haussière possible sur les 4 actifs."),
+    (r"\bgdp\b", ["NAS100", "SP500", "BTCUSD"],
+     "Croissance plus forte que prévu → généralement favorable aux actions et au risque (mais peut aussi raviver les craintes d'inflation).",
+     "Croissance plus faible que prévu → augmente le risque de ralentissement, pèse généralement sur les actions et les actifs risqués."),
+    (r"pmi|ism manufacturing|ism services|retail sales|consumer confidence|durable goods",
+     ["NAS100", "SP500", "BTCUSD"],
+     "Chiffre plus fort que prévu → plutôt favorable à l'appétit pour le risque (actions, crypto).",
+     "Chiffre plus faible que prévu → pèse généralement sur l'appétit pour le risque (actions, crypto)."),
+]
+
+
+def classify_calendar_event(title: str) -> dict | None:
+    lowered = title.lower()
+    for pattern, assets, higher, lower in CALENDAR_IMPACT_RULES:
+        if re.search(pattern, lowered):
+            return {"assets": assets, "higher": higher, "lower": lower}
+    return None
 
 
 def fetch_headlines() -> list[dict]:
@@ -135,31 +166,26 @@ def fetch_prices() -> dict:
 
     for asset, symbol in PRICE_SYMBOLS.items():
         try:
-            url = f"https://stooq.com/q/l/?s={symbol}&f=sd2t2ohlcv&h&e=csv"
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=1d"
             resp = requests.get(url, timeout=REQUEST_TIMEOUT, headers={"User-Agent": USER_AGENT})
             resp.raise_for_status()
-            reader = csv.DictReader(io.StringIO(resp.text))
-            row = next(reader)
-            close_raw = (row.get("Close") or "").strip()
-            open_raw = (row.get("Open") or "").strip()
-            if not close_raw or close_raw in ("N/D",):
+            meta = resp.json()["chart"]["result"][0]["meta"]
+
+            price_raw = meta.get("regularMarketPrice")
+            if price_raw is None:
                 raise ValueError("pas de cotation disponible")
+            price = float(price_raw)
 
-            close = float(close_raw)
+            prev_close_raw = meta.get("previousClose") or meta.get("chartPreviousClose")
             change_pct = None
-            if open_raw and open_raw not in ("N/D",):
-                open_val = float(open_raw)
-                if open_val:
-                    change_pct = (close - open_val) / open_val * 100
+            if prev_close_raw:
+                prev_close = float(prev_close_raw)
+                if prev_close:
+                    change_pct = (price - prev_close) / prev_close * 100
 
-            prices[asset] = {
-                "price": close,
-                "change_pct": change_pct,
-                "date": row.get("Date", ""),
-                "time": row.get("Time", ""),
-            }
+            prices[asset] = {"price": price, "change_pct": change_pct, "date": "", "time": ""}
         except Exception as exc:  # noqa: BLE001 - une source de prix en panne ne doit jamais bloquer le pipeline
-            print(f"[warn] prix indisponible pour {asset} via Stooq: {exc}", file=sys.stderr)
+            print(f"[warn] prix indisponible pour {asset} via Yahoo Finance: {exc}", file=sys.stderr)
             prices[asset] = None
 
     if prices.get("BTCUSD") is None:
@@ -401,15 +427,29 @@ def generate_html(
           <p class="reason">{html.escape(entry['reason'])}</p>
         </article>""")
 
-    calendar_html = "\n".join(
-        f'''<li class="event">
-          <span class="event-when">{html.escape(ev["date"])} {html.escape(ev["time"])}</span>
-          <span class="event-badge {IMPACT_STYLE[ev["impact"]]["css"]}">{IMPACT_STYLE[ev["impact"]]["label"]}</span>
-          <span class="event-country">{html.escape(ev["country"])}</span>
-          <span class="event-title">{html.escape(ev["title"])}</span>
+    def render_event(ev: dict) -> str:
+        impact_info = classify_calendar_event(ev["title"])
+        detail_html = ""
+        if impact_info:
+            assets_str = ", ".join(impact_info["assets"])
+            detail_html = f'''
+          <div class="event-detail">
+            <p class="event-assets">Actifs concernés : <strong>{html.escape(assets_str)}</strong></p>
+            <p class="event-scenario"><span class="scenario-up">Si au-dessus des attentes :</span> {html.escape(impact_info["higher"])}</p>
+            <p class="event-scenario"><span class="scenario-down">Si en dessous des attentes :</span> {html.escape(impact_info["lower"])}</p>
+          </div>'''
+        return f'''<li class="event">
+          <div class="event-row">
+            <span class="event-when">{html.escape(ev["date"])} {html.escape(ev["time"])}</span>
+            <span class="event-badge {IMPACT_STYLE[ev["impact"]]["css"]}">{IMPACT_STYLE[ev["impact"]]["label"]}</span>
+            <span class="event-country">{html.escape(ev["country"])}</span>
+            <span class="event-title">{html.escape(ev["title"])}</span>
+          </div>{detail_html}
         </li>'''
-        for ev in calendar
-    ) or '<li class="event-empty">Calendrier économique indisponible pour cette exécution.</li>'
+
+    calendar_html = "\n".join(render_event(ev) for ev in calendar) or (
+        '<li class="event-empty">Calendrier économique indisponible pour cette exécution.</li>'
+    )
 
     sources_html = "\n".join(
         f'<li><a href="{html.escape(h["link"])}" target="_blank" rel="noopener">{html.escape(h["title"])}</a> '
@@ -501,10 +541,10 @@ def generate_html(
   .reason {{ color: var(--text-dim); font-size: 0.92rem; line-height: 1.4; margin: 0; }}
   ul.events {{ list-style: none; margin: 0; padding: 0; }}
   li.event {{
-    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
-    padding: 8px 0; border-bottom: 1px solid var(--panel-border); font-size: 0.88rem;
+    padding: 10px 0; border-bottom: 1px solid var(--panel-border); font-size: 0.88rem;
   }}
   li.event:last-child {{ border-bottom: none; }}
+  .event-row {{ display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }}
   .event-when {{ color: var(--text-dim); min-width: 130px; font-variant-numeric: tabular-nums; }}
   .event-badge {{ font-size: 0.72rem; font-weight: 700; padding: 2px 8px; border-radius: 999px; }}
   .event-badge.impact-high {{ background: rgba(239,68,68,0.15); color: var(--high); }}
@@ -512,6 +552,15 @@ def generate_html(
   .event-country {{ color: var(--text-dim); font-weight: 600; min-width: 32px; }}
   .event-title {{ flex: 1; min-width: 140px; }}
   .event-empty {{ color: var(--text-dim); font-size: 0.88rem; }}
+  .event-detail {{
+    margin: 8px 0 0; padding: 10px 12px; background: rgba(255,255,255,0.03);
+    border-radius: 8px; border: 1px solid var(--panel-border);
+  }}
+  .event-detail p {{ margin: 0 0 6px; font-size: 0.84rem; line-height: 1.4; color: var(--text-dim); }}
+  .event-detail p:last-child {{ margin-bottom: 0; }}
+  .event-assets strong {{ color: var(--text); }}
+  .scenario-up {{ color: var(--up); font-weight: 600; }}
+  .scenario-down {{ color: var(--down); font-weight: 600; }}
   section.panel ul {{ margin: 0; padding-left: 18px; }}
   section.panel li {{ margin-bottom: 6px; font-size: 0.88rem; }}
   section.panel a {{ color: var(--text); text-decoration: none; }}
@@ -566,7 +615,7 @@ def generate_html(
     </section>
 
     <footer>
-      Sources : Google News, Yahoo Finance, ForexFactory, Stooq, CoinGecko · Analyse : Claude (Anthropic) avec repli automatique par mots-clés.
+      Sources : Google News, Yahoo Finance, ForexFactory, CoinGecko · Analyse : Claude (Anthropic) avec repli automatique par mots-clés.
     </footer>
   </div>
 </body>
